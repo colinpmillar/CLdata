@@ -1,0 +1,14 @@
+Package: CLdata
+Title: Data for the Estimation of Salmonid Abundance in Scottish Rivers
+Version: 0.0.1
+Authors@R: as.person(c(
+    "Colin Millar <C.Millar@marlab.ac.uk> [aut, cre]",
+    "Iain Malcolm <I.Malcolm@marlab.ac.uk> [ctb]",
+    "Karen Millidine <K.Millidine@marlab.ac.uk> [ctb]"))
+Description: This package contains worked up data
+Depends: 
+    R (>= 3.1.2)
+Imports:
+    sp (>= 1.0-16)
+License: file LICENSE
+LazyData: true
