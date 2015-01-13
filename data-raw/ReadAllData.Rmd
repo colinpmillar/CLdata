@@ -1,0 +1,469 @@
+
+
+```{r init}
+opts_chunk$set(cache.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/cache/ReadAllData/",
+  fig.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/fig/ReadAllData/",
+  tidy = FALSE)
+```
+
+
+
+# Read raw data (part I)
+
+This chapter summarises the reading in of the available raw spatial data.
+
+##### Outline
+
+* [Projections](#projections) Three projections are set up: BNG (Brittish National Grid) in Eastings and Northings; WGS84 (GS 1984) in lattitude and longitude; and Mercator.  All data is plotted in BNG, however, if set against a map downloaded from google maps then the projection is WGS84.
+  
+* [Catchments](#catchments) Catchment and regional data sets are associated with spatial polygon shape files read in using the `rgdal` package. There are several data sets available: catchments > 25 m2; catchments < 25 m2 (these are generally coastal catchments); hydrometric areas; subcatchments (where large catchments are subdivided); various salmon administrative regions such as the salmon statistical areas and the 1867 salmon region definitions.
+  
+* [River data](#river-data) There is one single river dataset assiciated with a measurale spatial lines shape file. 
+
+* [Barriers data](#barrier-data) There is a comprehensive spatial points dataset containing barriers to fish movement.
+
+The directories containing the raw data and where raw compressed versions are saved are:
+
+```{r data_dir, cache=TRUE}
+  # where intermediate working data is saved
+  raw_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/rData/"
+
+  # where raw data resides
+  data_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/"
+
+  # helper fuction to get file names 
+  fname <- function(file, ext = ".rData", dir = raw_dir) {
+    paste0(dir, file, ext)
+  }
+```
+
+<h2><a name="projections">Projections</a></h2>
+
+The three projections are defined as follows:
+
+```{r proj, cache=TRUE, dependson=c("data_dir")}
+proj <- list(
+  wgs84 = '+proj=longlat +datum=WGS84',
+  bng   = '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +datum=OSGB36 +units=m +no_defs',
+  merc  = "+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +no_defs"
+)
+
+# save full dataset to raw data folder
+save(proj, file = fname("proj"))
+```
+
+
+<h2><a name="catchments">Catchments and regions</a></h2>
+
+There are a variety of region shape files available.  The following are considered in this analysis.  Currently these data are read in using the `maptools` packages, however a better option is to use the `rgdal` package.  **This should be updated when possible**.
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### The ctm shapefile 
+
+
+```{r ctm, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+ctm <- readShapeSpatial(fname("GIS_shapefiles_for_model/Catchments/Baseline_confluence_nested_catchments", dir = data_dir, ext = ""))
+
+# add a column defining discrete catchments for use in analysis (should maybe do this later)
+ctm $ CATCH_ID <- 1:nrow(ctm)
+
+# add projection
+ctm @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(ctm, file = fname("ctm"))
+```
+
+This data looks like
+
+```{r plot_ctm, cache=TRUE, dependson=c("ctm")}
+# plot
+plot(ctm, main = "ctm", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The cctm shapefile 
+
+These polygons define the small to very small coastal catchments.  They are often grouped together, but can be considered individually.
+
+<!-- 
+should really be:
+  dependson=c("data_dir", "proj", "ctm")}
+but I want to limit the reruning of this segment
+-->
+
+```{r cctm, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+cctm <- readShapeSpatial(fname("GIS_shapefiles_for_model/Catchments/coastal_catchments", dir = data_dir, ext = ""))
+
+# make names consistent
+names(cctm)[names(cctm) == "CATCH_ID"] <- "CATCHMENT"
+names(cctm)[names(cctm) == "MIN_CATCHN"] <- "DESCRIPTIO"
+
+# add a column for discrete catchements as for ctm
+cctm $ CATCH_ID <- nrow(ctm) + 1:nrow(cctm)
+
+# add projection
+cctm @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(cctm, file = fname("cctm"))
+```
+
+This data looks like
+
+```{r plot_cctm, cache=TRUE, dependson=c("cctm")}
+# plot
+plot(cctm, main = "cctm", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The sctm shapefile 
+
+These polygons define so called super-catchments.
+
+```{r sctm, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+sctm <- readShapeSpatial(fname("GIS_shapefiles_for_model/Catchments/supercatch", dir = data_dir, ext = ""))
+
+# add projection
+sctm @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(sctm, file = fname("sctm"))
+```
+
+This data looks like
+
+```{r plot_sctm, cache=TRUE, dependson=c("sctm")}
+# plot
+plot(sctm, main = "sctm", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The rctm shapefile 
+
+These polygons define so called river catchments.
+
+
+```{r rctm, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+rctm <- readShapeSpatial(fname("GIS_shapefiles_for_model/Catchments/rivcatch", dir = data_dir, ext = ""))
+
+# add projection
+rctm @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(rctm, file = fname("rctm"))
+```
+
+This data looks like
+
+```{r plot_rctm, cache=TRUE, dependson=c("rctm")}
+# plot
+plot(rctm, main = "rctm", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The hma shapefile 
+
+These polygons define so called hydrometric areas.
+
+
+```{r hma, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+hma <- readShapeSpatial(fname("GIS_shapefiles_for_model/SEPA_hydrometric_areas/SEPA_hydrometric_areas", dir = data_dir, ext = ""))
+
+# rename for consistency
+names(hma)[names(hma) == "HA"] <- "HACode"
+names(hma)[names(hma) == "NAME"] <- "HAName"
+
+# add projection
+hma @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(hma, file = fname("hma"))
+```
+
+This data looks like
+
+```{r plot_hma, cache=TRUE, dependson=c("hma")}
+# plot
+plot(hma, main = "hma", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The Creating a coastline from hma shapes 
+
+An accurate coastline is usefull when plotting coastal and island catchments.
+
+```{r coast, cache=TRUE, dependson=c("data_dir", "hma")}
+# union the hma polygons
+require(rgeos)
+coast <- gUnaryUnion(hma)
+
+# save full dataset to rData folder
+save(coast, file = fname("coast"))
+```
+
+This data looks like
+
+```{r plot_coast, cache=TRUE, dependson=c("coast")}
+# plot
+plot(coast, main = "coast", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The sa1868 shapefile 
+
+These polygons define salmon administrative boundaries.
+
+```{r sa1868, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+sa1868 <- readShapeSpatial(fname("GIS_shapefiles_for_model/District maps data/sa_1868_1110", dir = data_dir, ext = ""))
+
+# add projection
+sa1868 @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(sa1868, file = fname("sa1868"))
+```
+
+This data looks like
+
+```{r plot_sa1868, cache=TRUE, dependson=c("sa1868")}
+# plot
+plot(sa1868, main = "sa1868", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The saSFD shapefile 
+
+These polygons define salmon administrative boundaries.
+
+```{r saSFD, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+saSFD <- readShapeSpatial(fname("GIS_shapefiles_for_model/District maps data/sa_SFD_1110", dir = data_dir, ext = ""))
+
+# add projection
+saSFD @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(saSFD, file = fname("saSFD"))
+```
+
+This data looks like
+
+```{r plot_saSFD, cache=TRUE, dependson=c("saSFD")}
+# plot
+plot(saSFD, main = "saSFD", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+### The sastatD shapefile 
+
+These polygons define salmon statistical disctricts.
+
+```{r sastatD, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+sastatD <- readShapeSpatial(fname("GIS_shapefiles_for_model/District maps data/sa_statD_1110", dir = data_dir, ext = ""))
+
+# add projection
+sastatD @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(sastatD, file = fname("sastatD"))
+```
+
+This data looks like
+
+```{r plot_sastatD, cache=TRUE, dependson=c("sastatD")}
+# plot
+plot(sastatD, main = "sastatD", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### The sastatR shapefile 
+
+These polygons define salmon statistical regions.
+
+```{r sastatR, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+sastatR <- readShapeSpatial(fname("GIS_shapefiles_for_model/District maps data/sa_statR_1110", dir = data_dir, ext = ""))
+
+# add projection
+sastatR @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(sastatR, file = fname("sastatR"))
+```
+
+This data looks like
+
+```{r plot_sastatR, cache=TRUE, dependson=c("sastatR")}
+# plot
+plot(sastatR, main = "sastatR", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### The satrust shapefile 
+
+These polygons define salmon trusts.
+
+```{r satrust, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in baseline catchments
+require(maptools)
+satrust <- readShapeSpatial(fname("GIS_shapefiles_for_model/District maps data/sa_trust_1110", dir = data_dir, ext = ""))
+
+# add projection
+satrust @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(satrust, file = fname("satrust"))
+```
+
+This data looks like
+
+```{r plot_satrust, cache=TRUE, dependson=c("satrust")}
+# plot
+plot(satrust, main = "satrust", col = grey(0.7))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+*******************************************************
+-->
+
+<h2><a name="river-data">River data</a></h2>
+
+
+
+```{r rivs, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in rivers
+require(maptools)
+rivs <- readShapeSpatial(fname("GIS_shapefiles_for_model/rivers/gi03_rivers_050914", dir = data_dir, ext = ""))
+
+# define coords as brittish nation grid
+rivs @ proj4string <- CRS(proj $ bng) 
+
+# rename nodes for uniqness
+floc <- sapply(rivs @ lines, function(ll) ll @ Lines[[1]] @ coords[1,])
+tloc <- sapply(rivs @ lines, function(ll) {x <- ll @ Lines[[1]] @ coords; x[nrow(x),]})
+
+newfloc <- as.numeric(apply(round(floc,1)*10, 2, paste, collapse = ""))
+newtloc <- as.numeric(apply(round(tloc,1)*10, 2, paste, collapse = ""))
+
+rivs $ FNODE_ <- newfloc
+rivs $ TNODE_ <- newtloc
+
+# remove two deadend river segments getting in the way 
+rivs <- rivs[rivs $ OBJECTID != 72354,] # WORKS!!
+rivs <- rivs[rivs $ OBJECTID != 3887,] # WORKS!!
+
+# save full dataset to rData folder
+save(rivs, file = fname("rivs"))
+```
+This data looks like
+
+```{r plot_rivs, cache=TRUE, dependson=c("rivs")}
+# plot
+plot(rivs, main = "rivs")
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+*******************************************************
+-->
+
+<h2><a name="barrier-data">Locations of potential barriers to fish movement</a></h2>
+
+```{r bars, cache=TRUE, dependson=c("data_dir", "proj")}
+# read in barriers
+require(maptools)
+bars <- readShapeSpatial(fname("GIS_shapefiles_for_model/rivers/Obstacles_to_Fish_Migration", dir = data_dir, ext = ""))
+
+# define coords as brittish nation grid
+bars @ proj4string <- CRS(proj $ bng) 
+
+# save full dataset to rData folder
+save(bars, file = fname("bars"))
+```
+
+This data looks like
+
+```{r plot_bars, cache=TRUE, dependson=c("bars")}
+# plot
+plot(bars, main = "bars")
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+*******************   END     *************************
+-->
+
+

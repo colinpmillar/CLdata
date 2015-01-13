@@ -1,0 +1,7 @@
+cache
+fig
+rData
+oldR
+
+*.html
+*.md

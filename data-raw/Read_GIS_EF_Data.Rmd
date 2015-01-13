@@ -1,0 +1,781 @@
+
+
+
+```{r init}
+opts_chunk$set(cache.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/cache/Read_GIS_EF_Data/",
+  fig.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/fig/Read_GIS_EF_Data/",
+  tidy = FALSE)
+```
+
+
+
+# Read raw data (part II)
+
+This chapter summarises the reading in of the available site info and electrofishing raw data.
+
+
+##### Outline
+
+* [Projections](#projections) Three projections are set up: BNG (Brittish National Grid) in Eastings and Northings; WGS84 (GS 1984) in lattitude and longitude; and Mercator.  All data is plotted in BNG, however, if set against a map downloaded from google maps then the projection is WGS84.
+  
+* [GIS derived data](#gis-data) Given the spatial location of the sampling sites, a range of raster files and the OS (Ordenance Survey) Master Map, it is possible to derive a wide range of spatial covariates. The main tool for this was ArcGIS, however, the use of R in this regard looks very promising.
+
+* [Electrofishing data](#electrofishing-data) The electrofishing data has come in a range of formats.  The basic information provided is the number of fishing runs, the number of salmon parr and fry, and trout parr and fry, caught on each fishing run.  Additional auxilliary information that is required for each site (spatial location) is the wetted area of the fishing site, sometimes the wetted width and length of the fishing site is also supplied.
+
+The directories containing the raw data and where raw compressed versions are saved are:
+
+```{r data_dir, cache=TRUE}
+  # where intermediate working data is saved
+  raw_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/rData/"
+
+  # where raw data resides
+  data_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/"
+
+  # helper fuction to get file names 
+  fname <- function(file, ext = ".rData", dir = raw_dir) {
+    paste0(dir, file, ext)
+  }
+```
+
+<h2><a name="projections">Projections</a></h2>
+
+The three projections are defined as follows:
+
+```{r proj, cache=TRUE, dependson=c("data_dir")}
+proj <- list(
+  wgs84 = '+proj=longlat +datum=WGS84',
+  bng   = '+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +datum=OSGB36 +units=m +no_defs',
+  merc  = "+proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +no_defs"
+)
+
+# save full dataset to raw data folder
+save(proj, file = fname("proj"))
+```
+
+<h2><a name="gis-data">GIS derived data and sample locations</a></h2>
+
+This section is conserned only with the unique site locations.  There is some duplication as some sub-datasets record different visits with different site IDs even though they are the same site.
+
+Even though there are mutliple sites with **exactly** the same reported spatial location, there appears to be variation in GIS covariates for these sites. _There can be quite large variation in these values also which is of concern_.
+
+
+```{r gis, cache=TRUE, depndson=c("data_dir", "proj")}
+# read in gis info
+gis <- read.csv(fname("SiteCovariate_data/ALL_Exported_Data_Final_With_Rivers", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+
+# make unique
+keep <- c("NEAR_X", "NEAR_Y",
+        #c("Latitude", "Longitude",
+          "Elevation_", "Slope_deg", "Upcatch_km", 
+          "Water_A", "Water_W", "Distance_s", "Distance_1", "Urban", 
+          "CTrees", "NCTrees", "Mixed", "Marsh", "Other", 
+          "CATCH_", "RIVCODE")
+
+gis <- unique(gis[keep])
+
+#dim(gis)
+#dim(unique(gis[1:2]))
+#dim(unique(gis[c("NEAR_DIST", "NEAR_X", "NEAR_Y", "Elevation_")]))
+# so somthing is wierd with the GIS derived covariates... 
+# the same location gets a different set of answers...
+# what is best then?  choose the 1st?  or the mean of available?
+# Lets go for the mean and treat the differences as random errors
+gis <- do.call(rbind,
+    by(gis, paste(gis $ NEAR_X, gis $ NEAR_Y), 
+        function(x) {
+          if (nrow(x) == 1) x else 
+            as.data.frame(c(colMeans(x[-(16:17)]), x[,16:17][1,]))
+      }))
+rownames(gis) <- NULL
+
+# fix an errant catchment number
+gis $ CATCH_[gis $ CATCH_ == 0] <- 80 # maybe should be 80..
+
+# add a unique identifier
+gis $ OBJECTID <- 1:nrow(gis)
+
+# convert to spatial points
+# define points as BNG
+require(sp)
+gis <- SpatialPointsDataFrame(
+              coords = cbind(gis $ NEAR_X, gis $ NEAR_Y), 
+              data = gis,
+              coords.nrs = c(1,2), 
+              proj4string = CRS(proj $ bng))
+
+# save full dataset to rData folder
+save(gis, file = fname("gis"))
+```
+
+the data looks like
+
+```{r show_gis, cache=TRUE, dependson=c("gis")}
+str(as.data.frame(gis))
+```
+
+a description of the feilds are to follow
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+*******************************************************
+-->
+
+
+<h2><a name="electrofishing-data">Electrofishing data</a></h2>
+
+
+This first segment of code reads in the raw
+
+```{r ef_setup, cache=TRUE, dependson=c("data_dir", "gis")}
+# load visit info - this is a bit of a mishmash
+visit <- read.csv(fname("SiteCovariate_data/ALL_Exported_Data_Final_With_Rivers", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+keep <- c("Catchment", "Unique_", "ID", "Site_ID", "Easting", "Northing", 
+          "Dataset", "Site_Name", "NEAR_X", "NEAR_Y")
+visit <- visit[keep]
+
+# add in some info that was missed off in first round
+extra <- read.csv(fname("SiteCovariate_data/Coordinates_FLSites" , dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+visit <- merge(visit, extra, all.x = TRUE)
+
+# load site table to match visits to
+dfgis <- as.data.frame(gis)
+rownames(dfgis) <- with(dfgis, paste(NEAR_X, NEAR_Y))
+visit $ Site_OBJECTID <- dfgis[with(visit, paste(NEAR_X, NEAR_Y)),"OBJECTID"]
+
+# can remove extra and dfgis if we want
+rm(extra, dfgis)
+
+# decide on a common format for joined up visit data
+outNames <- list(Site_ID      = "Site_OBJECTID",
+                 Site.Name    = "Site.Name",
+                 Dataset      = "Dataset",
+                 Date         = "Date",
+                 Runs         = "Runs",
+                 Area         = "Area",
+                 Width        = "Width",
+                 Length       = "Length",
+                 S0_Stocked   = "S0_Stocked",
+                 SP_Stocked   = "SP_Stocked",
+                 T0_Stocked   = "T0_Stocked",
+                 TP_Stocked   = "TP_Stocked",
+                 Stocked      = "Stocked",
+                 Trust        = "Trust")
+obs <- with(expand.grid(R = 1:8, age = c("0", "P"), sp = c("S", "T")), paste0(sp, age, "_R", R))
+outNames[obs] <- obs
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### fishobs data
+
+```{r fishobs, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+fobs <- read.csv(fname("EF_data/FishObs/FishObs Zero Count - total pass greater than 2", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+
+reshape.rename.fobs <- function(wk) {
+  wk $ SS <- with(wk, paste(Species, LifeCycleStage, sep = "."))
+  wk <- reshape(wk[-(3:4)], v.names = paste0("X", 1:8), idvar = c("Site.Name","Vist.Date"), direction = "wide", timevar = "SS")
+  # rename columns
+  names(wk)[names(wk) == "Site.Name"]      <- outNames $ Site.Name
+  names(wk)[names(wk) == "Vist.Date"]      <- outNames $ Date
+  names(wk)[names(wk) == "TotalPassCount"] <- outNames $ Runs
+  wkn <- names(wk)[grep("X", names(wk))]
+  wkn <- paste0(ifelse(grepl("Salmon", wkn), "S", "T"), ifelse(grepl("Fry", wkn), "0", "P"),
+                "_R", gsub("[a-z|A-Z|.]", "", wkn))
+  names(wk)[grep("X", names(wk))] <- wkn
+
+  #get Easting and Northing. 
+  #Note: some sites will be dropped if they are not in gis data frame
+  EN <- subset(visit, Dataset == "FishObs")[c("Site_Name", outNames $ Site_ID)]
+
+  EN $ Site_Name <- gsub(" GLENHEAD", " OF GLENHEAD", EN $ Site_Name)
+  EN $ Site_Name <- gsub(" L$", " LOWER", EN $ Site_Name)
+  EN $ Site_Name <- gsub(" M$", " MIDDLE", EN $ Site_Name)
+  EN $ Site_Name <- gsub(" U$", " UPPER", EN $ Site_Name)
+  EN $ Site_Name <- gsub(" $", "", EN $ Site_Name)
+  EN $ Site_Name <- gsub("_UWT$", "_Upper West Trib", EN $ Site_Name)
+  EN $ Site_Name <- gsub("_WT$", "_West Trib", EN $ Site_Name)
+
+  wk $ Site.Name <- gsub(" $", "", wk $ Site.Name)   
+  wk $ Site.Name <- gsub("GIR_IB$", "GIR_IBk", wk $ Site.Name)
+  wk $ Site.Name <- gsub("GIR_HB$", "GIR_HBK", wk $ Site.Name)
+
+  rownames(EN) <- EN $ Site_Name
+  wk <- cbind(wk, EN[wk $ Site.Name,][outNames $ Site_ID])
+  
+  ## look at unassigned data
+  # sort(unique(wk $ Site.Name[is.na(wk $ Easting)]))
+  ## look at unassigned sites
+  # sort(EN $ Site_Name[!(EN $ Site_Name %in% wk $ Site.Name)]
+
+  # remove sites not in visit list
+  #wk <- wk[!is.na(wk[[outNames $ Site_ID]]),]
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "fobs"
+  wk[unlist(outNames)]
+}
+
+# tidy up fobs data
+fobs <- reshape.rename.fobs(fobs)
+
+# get measurements at sites
+fmeas <- read.csv(fname("EF_data/FishObs/Site_Measures", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+fmeas <- fmeas[-c(1,2,4)]
+names(fmeas) <- gsub("Visit.", "", names(fmeas))
+names(fmeas) <- gsub("Start.", "", names(fmeas))
+names(fmeas) <- gsub("From.", "", names(fmeas))
+names(fmeas) <- gsub("Width[s]", "W", names(fmeas))
+names(fmeas) <- gsub("Historic", "Hist", names(fmeas))
+fmeas $ Date <- with(fmeas, sapply(strsplit(substring(Date, 1, 10), "/"), function(x) paste(rev(x), collapse = "/")))
+
+# drop Length Bank.Full.Width to remove replication
+fmeas <- unique(fmeas[!(names(fmeas) %in% c("Length", "Bank.Full.Width"))])
+
+fmeas <- do.call(rbind,
+    by(fmeas, fmeas $ Site.Name, 
+        function(x) {
+          if (nrow(x) == 1) x else 
+            as.data.frame(c(x[1:2][1,], colMeans(x[-(1:2)], na.rm = TRUE)))
+      }))[-2]
+
+fmeas2 <- read.csv(fname("EF_data/FishObs/Site_Measurements2", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+names(fmeas2) <- gsub("Visit.", "", names(fmeas2))
+names(fmeas2) <- gsub("Start.", "", names(fmeas2))
+names(fmeas2) <- gsub("From.", "", names(fmeas2))
+names(fmeas2) <- gsub("Width[s]", "W", names(fmeas2))
+names(fmeas2) <- gsub("Historic", "Hist", names(fmeas2))
+fmeas2 $ Date <- with(fmeas2, sapply(strsplit(substring(Date, 1, 10), "/"), function(x) paste(rev(x), collapse = "/")))
+
+fmeas2 $ Site.Name <- gsub(" $", "", fmeas2 $ Site.Name)
+
+# double measures from some GIR_[0-9][0-9] sites  
+#table(paste(fmeas2 $ Site.Name, fmeas2 $ Date)); t(t(x[x>1]))
+
+fmeas2 <- do.call(rbind,
+    by(fmeas2, fmeas2 $ Site.Name, 
+        function(x) {
+          if (nrow(x) == 1) x[c(1,2,8)] else 
+            as.data.frame(c(x[1:2][1,], colMeans(x[8], na.rm = TRUE)))
+      }))[-2]
+#rownames(fmeas2) <- fmeas2 $ Site.Name
+
+fmeas <- merge(fmeas, fmeas2, all = TRUE)
+fmeas[-1] <- lapply(fmeas[-1], function(x) {x[is.nan(x)] <- NA; x})
+fmeas <- fmeas[c("Site.Name", "Area.Wet.Width", "Measurement")]
+
+fmeas $ Area <- rowMeans(fmeas[-1], na.rm = TRUE)
+fmeas <- fmeas[c("Site.Name", "Area")]
+fmeas $ Area[is.nan(fmeas $ Area)] <- NA
+rownames(fmeas) <- paste(fmeas $ Site.Name)
+
+fobs $ Area <- fmeas[paste(fobs $ Site.Name),"Area"]
+
+# what is missing
+wk2 <- fobs[is.na(fobs $ Area), c("Site.Name", "Date")]
+
+fobs <- fobs[unlist(outNames)]
+
+# add in Stocking years
+fobs $ S0_Stocked <- fobs $ SP_Stocked <- fobs $ T0_Stocked <- fobs $ TP_Stocked <- "No"
+which <- with(fobs, (grepl("BAD", Site.Name) &
+                    as.numeric(substring(Date, 7)) %in% c(1994, 1996:2000, 2003, 2006:2008)) &
+                     (grepl("GIR", Site.Name) & !grepl("GIR_HB", Site.Name) &
+                    as.numeric(substring(Date, 7)) %in% c(1978, 1985, 2000:2011)))
+fobs $ S0_Stocked[which] <- "Yes"
+
+which <- with(fobs, (grepl("BAD", Site.Name) &
+                    as.numeric(substring(Date, 7)) %in% 1995:2011)  &
+                     (grepl("GIR", Site.Name) & !grepl("GIR_HB", Site.Name) &
+                    as.numeric(substring(Date, 7)) %in% c(1979:1981, 1986:1988, 2001:2014)))
+fobs $ SP_Stocked[which] <- "Yes"
+
+# add in Trust as "MSS"
+fobs $ Trust  <- "MSS"
+```
+
+<!--
+This data looks like
+
+```{r show_fishobs, cache=TRUE, dependson=c("fishobs")}
+str(fobs)
+```
+-->
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### sfcc data
+
+```{r sfcc, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+sfcc <- read.csv(fname("EF_data/SFCC/SFCC_Raw Data Export for MSS 19_08_2014", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+
+# remove tweed data prior to 1997
+sfcc <- subset(sfcc, !(grepl("Tweed", Catchment) & as.numeric(substring(Date, 7)) < 1997))
+
+# look at area estimates
+sfcc $ myarea <- with(sfcc, AvgWeWth * Reach_Length.m.)
+subset(sfcc, myarea - Area.m2. > 0.1)[c("Area.m2.","myarea")]
+which <- which(with(sfcc, myarea - Area.m2. > 0.1))
+sfcc $ Area.m2.[which] <- sfcc $ myarea[which]
+
+keep <- c("Date", "Easting", "Northing", "Altitude", "EventId", # keep stocking,
+          "No_Runs", "Reach_Length.m.", "Area.m2.", "AvgWeWth", "Trust", "STOCKING",
+          with(expand.grid(R = 1:5, age = 0:4, sp = c("S", "T")), paste0(sp, age, "_R", R)))
+
+clyde <- read.csv(fname("EF_data/SFCC/SFCC Clyde Data Export for Iain Malcolm 07.10.14", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+names(clyde)[names(clyde) == "Runs"] <- "No_Runs"
+names(clyde)[names(clyde) == "Reach"] <- "Reach_Length.m."
+names(clyde)[names(clyde) == "Area"] <- "Area.m2."
+names(clyde)[names(clyde) == "EventTrust"] <- "Trust"
+clyde $ STOCKING <- ""
+
+sfcc <- rbind(sfcc[keep], clyde[keep])
+
+
+# are there any which have no numbers
+countcol <- with(expand.grid(R = 1:5, age = 0:4, sp = c("S", "T")), paste0(sp, age, "_R", R))
+which <- apply(sfcc[countcol], 1, function(x) all(is.na(x)))
+# turns out these have no densities either so ditch them
+sfcc <- sfcc[!which,]
+
+# sum up 1+ and remove individual age columns
+for (sp in c("S", "T"))
+  for (R in 1:5) {
+    counts <- sfcc[ paste0(sp, 1:4, "_R", R) ]
+    sfcc[paste0(sp, "P_R", R)] <- NA
+    which <- apply(counts, 1, function(x) !all(is.na(x)))
+    sfcc[which, paste0(sp, "P_R", R)] <- rowSums(counts[which,], na.rm = TRUE)
+  }
+
+#  sfcc $ STOCKING <- tolower(sfcc $ STOCKING) != "no"
+
+which <- with(expand.grid(R = 1:5, age = 1:4, sp = c("S", "T")), paste0(sp, age, "_R", R))
+sfcc <- sfcc[!(names(sfcc) %in% which)]
+
+reshape.rename.sfcc <- function(wk) {
+  # rename columns
+  names(wk)[names(wk) == "Date"]       <- outNames $ Date
+  names(wk)[names(wk) == "No_Runs"]    <- outNames $ Runs
+  names(wk)[names(wk) == "Area.m2."]    <- outNames $ Area
+  names(wk)[names(wk) == "Reach_Length.m."]    <- outNames $ Length
+  names(wk)[names(wk) == "AvgWeWth"]    <- outNames $ Width
+  names(wk)[names(wk) == "STOCKING"]    <- outNames $ Stocked
+  wk[outNames $ Site.Name] <- wk $ EventId
+
+  # attach Site
+  EN <- subset(visit, Dataset == "SFCC")[c("Site_ID","Site_OBJECTID")]
+  rownames(EN) <- EN $ Site_ID
+  wk <- cbind(wk, EN[paste(wk $ EventId),]["Site_OBJECTID"])
+
+  # remove data with no visit entry
+  #wk <- wk[!is.na(wk $ Site),]
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "sfcc"
+  wk[unlist(outNames)]
+}
+
+sfcc <- reshape.rename.sfcc(sfcc)
+```
+
+<!--
+This data looks like
+
+```{r show_sfcc, cache=TRUE, dependson=c("sfcc")}
+str(sfcc)
+```
+-->
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### sepa data
+
+```{r sepa, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+sepa <- read.csv(fname("EF_data/SEPA/All_salmonid_data_NEMS_export_format_May_2014", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+
+# remove empty rows
+sepa <- sepa[apply(sepa, 1, function(x) !(is.na(x) || x == "")),]
+
+# remove "." from column names
+names(sepa) <- gsub("[.]", "", names(sepa))
+
+# sort out count columns
+countcol <- with(expand.grid(R = 1:5, age = c("1in", "2"), sp = c("", "1")), paste0("YrCl", age, "Run", R, sp))
+sepa[countcol] <- lapply(sepa[countcol], function(x) {
+                    if (is.numeric(x)) return(x)
+                    x[x %in% c("", "na")] <- NA
+                    as.numeric(x)
+                  })
+
+# which columns to keep
+keep <- c("SAMPLED_DATE", "Easting", "Northing", "SAMPLING_POINT",
+          "Numberoffishingruns", "Sitelength", "Wetareafished", "Meanwetwidth", "Fishstocking",
+# WHICH TO USE?: "Mean.wet.width", "Mean.bed.width", "Wet.area.fished", "Bed.area.fished"
+          countcol)
+
+sepa <- sepa[keep]
+
+# rename columns to identify species
+names(sepa) <- gsub("(inRun)|(Run)", "_R", names(sepa))
+names(sepa) <- gsub("YrCl1", "0", names(sepa))
+names(sepa) <- gsub("YrCl2", "P", names(sepa))
+names(sepa)[-(1:8)] <- paste0(rep(c("S", "T"), each = 10), substring(names(sepa)[-(1:8)], 1, 4))
+
+
+reshape.rename.sepa <- function(wk) {
+  # rename columns
+  names(wk)[names(wk) == "SAMPLED_DATE"]        <- outNames $ Date
+  names(wk)[names(wk) == "Numberoffishingruns"] <- outNames $ Runs
+  names(wk)[names(wk) == "Wetareafished"]    <- outNames $ Area
+  names(wk)[names(wk) == "Sitelength"]    <- outNames $ Length
+  names(wk)[names(wk) == "Meanwetwidth"]    <- outNames $ Width
+  names(wk)[names(wk) == "Fishstocking"]    <- outNames $ Stocked
+  wk[outNames $ Site.Name] <- wk $ SAMPLING_POINT
+
+  # attach Site
+  EN <- subset(visit, Dataset == "SEPA")[c("Easting", "Northing","Site_OBJECTID")]
+  EN <- unique(EN)
+  rownames(EN) <- paste(EN $ Easting, EN $ Northing)
+  wk <- cbind(wk, EN[paste(wk $ Easting, wk $ Northing),]["Site_OBJECTID"])
+
+  # remove data with no GIS covars
+  #wk <- wk[!is.na(wk $ Site_OBJECTID),]
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "sepa"
+  wk[unlist(outNames)]
+}
+
+sepa <- reshape.rename.sepa(sepa)
+sepa $ Trust <- "SEPA"
+```
+
+<!--
+This data looks like
+
+```{r show_sepa, cache=TRUE, dependson=c("sepa")}
+str(sepa)
+```
+-->
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### caithness data
+
+```{r caithness, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+filename <- fname("EF_data/Caithness/Electric fishing 2013 data~clean version", dir = data_dir, ext = ".xlsx")
+require(xlsx)
+
+wb <- loadWorkbook(filename)
+sheets <- getSheets(wb)
+
+# read data sheet
+datasheets <- sheets[grep("data", names(sheets))]
+wk <- 
+lapply(1:length(datasheets), 
+  function(i) {  
+    x <- readColumns(datasheets[[i]], 1, 15, startRow = 2, 
+                     colClasses = rep(c("numeric", "character")[c(1,1,2,2,1)], 3))
+    x <- x[c(2,7,12,5,10,15)]
+    x[] <- lapply(x, function(x) {x <- as.numeric(paste(x)); x[is.nan(x)] <- NA; x})
+    x[1,1:3] <- sapply(x[1:3], function(x) sum(!is.na(x)))
+    out <- x[1,]
+    # zero fry counts recorded as NA
+    out[4:6][is.na(out[4:6])] <- 0
+    names(out) <- substring(names(out), 3)
+    names(out) <- gsub("(.length)|(.n)", "", names(out))
+    out
+  })
+
+caithness <- do.call(rbind, wk)
+
+# get date place etc
+infosheets <- sheets[grep("notes", names(sheets))]
+wk <- 
+lapply(1:length(infosheets), 
+  function(i) {  
+    x <- readColumns(infosheets[[i]], 1, 2, startRow = 1, endRow = 16, header = FALSE, as.data.frame = FALSE)
+    out <- matrix(paste(x[[2]]), nrow = 1, dimnames = list(1, x[[1]]))
+    out <- as.data.frame(out, stringsAsFactors = FALSE)
+    out[out %in% c("", "NA", "Complex see notes", "Complex see note")] <- as.numeric(NA)
+    out[c(5,7:15)] <- lapply(out[c(5,7:15)], as.numeric)
+    out $ Date <- paste(as.POSIXct(out $ Date * 60 * 60 * 24, origin = "1899-12-30", tz = "GMT"))
+    out
+  })
+
+caithness <- cbind(do.call(rbind, wk), caithness)
+
+# add in full grid reference
+fullref <- c("nd 042 523", "nd 039 578", "nd 047 663", "nc 988 408", 
+             "nd 006 391", "nd 052 424", "nd 123 482", "nd 144 491", 
+             "nd 141 604", "nd 296 626", "nd 233 524", "nd 255 525",
+             "nd 281 538", "nd 105 337", "nd 123 325", "nc 984 312",
+             "nd 034 297", "nd 074 304", "nd 103 245", "nd 016 260", "nd 046 236",
+             "nd 074 228")
+names(fullref) <- substring(fullref, 4)
+fullref <- toupper(gsub(" ", "", fullref))
+caithness <- cbind(caithness, Grid_Ref = fullref[caithness[["Grid ref"]]])
+
+caithness $ Date <- sapply(strsplit(caithness $ Date, "-"), function(x) paste(x[3],  x[2], x[1], sep = "/"))
+
+
+reshape.rename.caithness <- function(wk) {
+  # rename columns
+  names(wk)[names(wk) == "Date"]     <- outNames $ Date
+  names(wk)[names(wk) == "Site area wet"]     <- outNames $ Area
+  wk[outNames $ Site.Name] <- paste(wk $ Catchment, wk[["Site name"]])
+
+  wkn <- names(wk)[grep("F[0-9][.]", names(wk))]
+  wkn <- paste0("S", ifelse(grepl("Fry", wkn), "0", "P"),
+                "_R", substring(wkn, 2, 2))
+  names(wk)[grep("F[0-9][.]", names(wk))] <- wkn
+  
+  # fill in number of runs
+  wk[outNames $ Runs] <- 3
+
+  # add site id
+  EN <- subset(visit, Dataset == "Alan Youngson")[c("Grid_Ref_ori","Site_OBJECTID")]
+  # attach Site
+  rownames(EN) <- paste(EN $ Grid_Ref_ori)
+  wk <- cbind(wk, EN[paste(wk $ Grid_Ref),]["Site_OBJECTID"])
+
+  # remove data with no GIS covars
+  #wk <- wk[!is.na(wk $ Site_OBJECTID),]
+  
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "caithness"
+  wk[unlist(outNames)]
+}
+
+caithness <- reshape.rename.caithness(caithness)
+caithness $ Trust <- "Youngson"
+```
+
+<!--
+This data looks like
+
+```{r show_caithness, cache=TRUE, dependson=c("caithness")}
+str(caithness)
+```
+-->
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### awalker data
+
+```{r awalker, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+filenames <- dir(fname("EF_data/Andy_Walker_West_Coast_RAW/Database_ouput_files/", dir = data_dir, ext = ""), pattern = "*.csv", full.names = TRUE)
+
+awalker <- do.call(rbind, lapply(filenames, read.csv, header = TRUE, stringsAsFactors = FALSE))
+
+## do something like for sfcc to add up ages to get par.
+keep <- c("Date", "Easting", "Northing", "Alt", "Catch", "River", # keep stocking,
+          "Runs", "Reach", "Area", "AvgWeWth", "AvgBeWth", "AvgBaWth", "STOCK",
+          with(expand.grid(R = 1:4, age = 0:4, sp = c("S", "T")), paste0(sp, age, "_R", R)))
+awalker <- awalker[keep]
+
+# sum up 1+ and remove individual age columns
+for (sp in c("S", "T"))
+  for (R in 1:4) {
+    counts <- awalker[ paste0(sp, 1:4, "_R", R) ]
+    awalker[paste0(sp, "P_R", R)] <- NA
+    which <- apply(counts, 1, function(x) !all(is.na(x)))
+    awalker[which, paste0(sp, "P_R", R)] <- rowSums(counts[which,], na.rm = TRUE)
+  }
+
+which <- with(expand.grid(R = 1:4, age = 1:4, sp = c("S", "T")), paste0(sp, age, "_R", R))
+awalker <- awalker[!(names(awalker) %in% which)]
+
+reshape.rename.awalker <- function(wk) {
+  # rename columns
+  names(wk)[names(wk) == "Date"]     <- outNames $ Date
+  names(wk)[names(wk) == "Runs"]     <- outNames $ Runs
+  names(wk)[names(wk) == "Reach"]    <- outNames $ Length
+  names(wk)[names(wk) == "AvgWeWth"]    <- outNames $ Width
+  names(wk)[names(wk) == "STOCK"]     <- outNames $ Stocked
+  wk[outNames $ Site.Name] <- paste(wk $ Catch, wk $ River)
+
+ # attach Site
+  EN <- subset(visit, Dataset == "AndyWalker")[c("Eastings_ori", "Northings_ori","Site_OBJECTID")]
+  EN <- unique(EN)
+  rownames(EN) <- paste(EN $ Easting, EN $ Northing)
+  wk <- cbind(wk, EN[paste(wk $ Easting, wk $ Northing),]["Site_OBJECTID"])
+
+  # remove data with no GIS covars
+  #wk <- wk[!is.na(wk $ Site_OBJECTID),]
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "awalker"
+  wk[unlist(outNames)]
+}
+
+awalker <- reshape.rename.awalker(awalker)
+awalker $ Trust <- "Walker"
+```
+
+<!--
+This data looks like
+
+```{r show_awalker, cache=TRUE, dependson=c("awalker")}
+str(awalker)
+```
+-->
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### tay data
+
+```{r tay, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+tay <- read.csv(fname("EF_data/Stuart_Middlemas_TayEco/Tay Ecology data", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+tay $ site[tay $ site == "up.bruar"] <- "up bruar"
+tay $ date <- sapply(strsplit(tay $ date, "-"), 
+  function(x) {
+    mm <- which(month.abb == x[2])
+    mm <- paste0(if (mm < 10) "0" else "", mm)
+    paste(x[1], mm, as.numeric(x[3]) + 2000, sep = "/")
+  })
+
+reshape.rename.tay <- function(wk) {
+  wk $ SS <- with(wk, paste(species, age, sep = "."))
+  wk <- reshape(wk[-c(1,7:8)], v.names = paste0("r", 1:6), idvar = c("site","date","area"), direction = "wide", timevar = "SS")
+  # rename columns
+  names(wk)[names(wk) == "site"]      <- outNames $ Site.Name
+  names(wk)[names(wk) == "date"]      <- outNames $ Date
+  names(wk)[names(wk) == "area"]      <- outNames $ Area
+  names(wk)[names(wk) == "length"]    <- outNames $ Length
+  names(wk)[names(wk) == "wetted_width"]    <- outNames $ Width
+  wkn <- names(wk)[grep("^r", names(wk))]
+  wkn <- paste0(ifelse(grepl("s", wkn), "S", "T"), ifelse(grepl("0", wkn), "0", "P"),
+                "_R", substring(wkn, 2, 2))
+  names(wk)[grep("^r", names(wk))] <- wkn
+
+  #fill in number of runs
+  wk[outNames $ Runs] <- apply(wk[, paste0("S0_R", 1:6)], 1, function(x) sum(!is.na(x)))
+
+  #get Site
+  EN <- subset(visit, Dataset == "Stuart Middlemas" & Catchment == "Tay")[c("Site_Name","Site_OBJECTID")]
+  rownames(EN) <- EN $ Site_Name
+  wk <- cbind(wk, EN[wk $ Site.Name,]["Site_OBJECTID"])
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "tay"
+  wk[unlist(outNames)]
+}
+
+tay <- reshape.rename.tay(tay)
+tay $ Trust <- "MSS"
+```
+
+<!--
+This data looks like
+
+```{r show_tay, cache=TRUE, dependson=c("tay")}
+str(tay)
+```
+-->
+
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### Stuarts Data data
+
+```{r sm, cache=TRUE, dependson=c("data_dir", "ef_setup")}
+sm <- read.csv(fname("EF_data/Stuart_Middlemas_TayEco/efdata 28 Oct", dir = data_dir, ext = ".csv"), stringsAsFactors = FALSE)
+
+reshape.rename.sm <- function(wk) {
+  # rename columns
+  names(wk)[names(wk) == "Date"] <- outNames $ Date
+  names(wk)[names(wk) == "Area.fished"]      <- outNames $ Area
+  names(wk)[names(wk) == "Length"]    <- outNames $ Length
+  names(wk)[names(wk) == "Av..Width"]    <- outNames $ Width
+  wk[[outNames $ Site.Name]] <- paste(wk $ Catchment, wk $ Tributary)
+
+  #fill in number of runs
+  wk[outNames $ Runs] <- apply(wk[, paste0("S0_R", 1:3)], 1, function(x) sum(!is.na(x)))
+
+  # attach Site
+  EN <- subset(visit, Dataset == "Stuart Middlemas")[c("Grid_Ref_ori","Site_OBJECTID")]
+  rownames(EN) <- paste(EN $ Grid_Ref_ori)
+  wk <- cbind(wk, EN[paste(wk $ OS.Grid.Ref),]["Site_OBJECTID"])
+
+  # 
+  EN <- subset(visit, Dataset == "Stuart Middlemas" & grepl("alm[0-9]", Site_ID))[c("Site_ID","Site_OBJECTID")]
+  rownames(EN) <- gsub("alm", "Tay Almond ", EN $ Site_ID)
+  which <- grepl("Tay Almond", wk $ Site.Name)
+  wk $ Site_OBJECTID[which] <- EN[wk $ Site.Name[which],"Site_OBJECTID"]
+
+  #wk <- wk[!is.na(wk $ Site_OBJECTID),]
+
+  wk[setdiff(unlist(outNames), names(wk))] <- NA
+  wk[outNames $ Dataset] <- "sm"
+  wk[unlist(outNames)]
+}
+
+sm <- reshape.rename.sm(sm)
+sm $ Trust <- "MSS"
+```
+<!--
+This data looks like
+
+```{r show_sm, cache=TRUE, dependson=c("sm")}
+str(sm)
+```
+-->
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+### Combine all data
+
+
+
+```{r ef_combine, cache=TRUE, dependson=c("data_dir", "fobs", "sfcc", "sepa", "caithness", "awalker", "tay", "sm")}
+# combine in one data.frame
+ef <- rbind(fobs, tay, sm, sfcc, sepa, awalker, caithness)
+rownames(ef) <- NULL
+
+# remove unused columns
+ef <- ef[apply(ef, 2, function(x) !all(is.na(x)))]
+
+# Tidy up stocking info
+ef $ Stocked[is.na(ef $ Stocked)] <- "No"
+ef $ Stocked <- gsub("^N$|^$", "No", ef $ Stocked)
+ef $ Stocked <- gsub("^Y$", "Yes", ef $ Stocked)
+ef $ Stocked <- gsub("^[?]$|^DK$|^Maybe$", "Unknown", ef $ Stocked)
+
+# Tidy up Area data
+ef $ Area <- as.numeric(ef $ Area)
+# throw out zero area fishings ?
+ef $ Area[ef $ Area == 0] <- NA
+
+# save full dataset to rData folder
+save(ef, file = fname("ef"))
+```
+
+The full data set looks like
+
+```{r show_ef, cache=TRUE, dependson=c("ef_combine")}
+str(ef)
+summary(as.data.frame(lapply(ef, function(x) if(is.character(x)) factor(x) else x)))
+```

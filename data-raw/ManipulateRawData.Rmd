@@ -1,0 +1,536 @@
+
+
+```{r init}
+opts_chunk$set(cache.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/cache/ManipulateRawData/",
+  fig.path="B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/fig/ManipulateRawData/",
+  tidy = FALSE)
+```
+
+
+
+# Maniplate raw data
+
+This chapter summarises the manipulation required of the available raw data.  Removal of unnessisary data and connecting of data sets.
+
+
+##### Outline [to be re-writen]
+
+* [add river segment and catchment ID to site info](#site-info) Three projections are set up: BNG (Brittish National Grid) in Eastings and Northings; WGS84 (GS 1984) in lattitude and longitude; and Mercator.  All data is plotted in BNG, however, if set against a map downloaded from google maps then the projection is WGS84.
+  
+* [add barriers to site info](#site-bars) Catchment and regional data sets are associated with spatial polygon shape files read in using the `rgdal` package. There are several data sets available: catchments > 25 m2; catchments < 25 m2 (these are generally coastal catchments); hydrometric areas; subcatchments (where large catchments are subdivided); various salmon administrative regions such as the salmon statistical areas and the 1867 salmon region definitions.
+  
+* [calculate route to sea for barriers](#sea-route) There is one single river dataset assiciated with a measurale spatial lines shape file. 
+
+* [trim rivers and remove psuedonodes](#trim-rivs) There is a comprehensive spatial points dataset containing barriers to fish movement.
+
+The directories containing the raw data and where raw compressed versions are saved are:
+
+```{r data_dir, cache=TRUE}
+  # where intermediate working data is saved
+  raw_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/Spatial_Abundance_Model/package/CLdata/data-raw/rData/"
+
+  # where raw data resides
+  data_dir <- "B:/Conservation_Limits/CL_Juvenile_Density/"
+
+  # helper fuction to get file names 
+  fname <- function(file, ext = ".rData", dir = raw_dir) {
+    paste0(dir, file, ext)
+  }
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+*******************************************************
+-->
+
+
+The following functions can be used to navigate from a point on a river network to the river mouth.  As long as the lines end points match in space then once a line segment is has no onward connection, the end point is defined as a river mouth.
+
+```{r rivernext, cache=TRUE}
+# some useful functions
+riverNext <- function(ID) {
+  L1 <- rivs[rivs $ OBJECTID == ID,]
+  if (L1 $ TNODE_ == 0) {
+    cat("unconnected node\n")
+    return(NA)
+  }
+  if (sum(rivs $ FNODE_ == L1 $ TNODE_)==0) {
+    #cat("river mouth\n")
+    return(NA)
+  }
+  L2s <- rivs[rivs $ FNODE_ == L1 $ TNODE_,]
+
+  flocs <- sapply(L2s @ lines, function(ll) ll @ Lines[[1]] @ coords[1,])
+  tloc <- tail(L1 @ lines[[1]] @ Lines[[1]] @ coords, 1)
+  dist <- sqrt(colSums((flocs - c(tloc))^2))
+  if (all(dist > 10))  {
+    #cat("river mouth\n")
+    return(NA)
+  }
+  L2ind <- which.min(dist) 
+  L2 <- L2s[L2ind,]
+
+  rbind(L1, L2)
+}
+
+riverEnd <- function(ID, add = FALSE, old = NULL) {
+  route <- rep(NA, 100)
+  route[1] <- ID
+  rnext <- riverNext(ID)
+  i <- 1
+  while(!identical(rnext, NA) & !(route[i] %in% old)) {
+    route[i <- i + 1] <- rnext $ OBJECTID[2]
+    rnext <- riverNext(route[i])
+  }
+  route[!is.na(route)]
+}
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+<h2><a name="site-info">Add river segment and catchment ID to site info</a></h2>
+
+
+```{r gis_stuff, cache=TRUE, dependson=c("data_dir", "rivernext")}
+# get all segements with a start and end within a bbox
+load(fname("ctm"))
+load(fname("cctm"))
+load(fname("coast"))
+load(fname("rivs"))
+load(fname("gis"))
+
+#find centre of cctm polygons
+ccentre <- sapply(cctm @ polygons, function(x) colMeans(x @ Polygons[[1]] @ coords))
+
+# get river node locations
+floc <- sapply(rivs @ lines, function(ll) ll @ Lines[[1]] @ coords[1,])
+tloc <- sapply(rivs @ lines, function(ll) {x <- ll @ Lines[[1]] @ coords; x[nrow(x),]})
+
+# create container for river stretch ID
+gis $ rivs_OBJECTID <- NA
+gis $ CATCH_ID <- NA
+gis $ DESCRIPTIO <- NA
+rivs $ CATCH_ID <- NA
+
+routeList <- vector("list", nrow(gis))
+names(routeList) <- 1:nrow(gis)
+
+score <- rep(NA, nrow(gis))
+visualise <- FALSE
+verbose <- FALSE
+tries <- order(gis $ Distance_s, decreasing = TRUE)
+require(rgeos)
+
+j <- 0
+for (i in tries) {
+  j <- j + 1
+
+  if (verbose) cat("       \r", sum(is.na(gis $ CATCH_ID)), "to go!"); flush.console()
+  # choose a point
+  wkgis <- gis[i,]
+
+  # take a circle round the point
+  p <- c(wkgis @ coords)
+  dist <- 5000
+  rwhich <- which(colSums((floc - p)^2) < dist^2 | colSums((tloc - p)^2) < dist^2)
+  wkrivs <- rivs[rwhich,]
+  cwhich <- which(colSums((ccentre - p)^2) < dist^2)
+  if (length(cwhich) == 0) cwhich = 1 # quick lazy fix
+  wkcctm <- cctm[cwhich,]
+  if (visualise) {
+    plot(wkrivs, main = i)
+    plot(wkcctm, add = TRUE, border = "darkred", col = "lightyellow")
+    plot(ctm, add = TRUE, col = "lightyellow3")
+    plot(wkrivs, col = "blue", add = TRUE)
+    points(wkgis, col = "red", pch = 16)
+    points(gis, col = "red")
+  }  
+  # find which river segment it is on
+  wkdf <- 
+  do.call(rbind, lapply(1:nrow(wkrivs),
+         function(i) {
+           lls <- wkrivs @ lines [[i]] @ Lines[[1]] @ coords
+           colnames(lls) <- c("x", "y")
+           lls <- as.data.frame(lls)
+           lls $ OBJECTID = wkrivs $ OBJECTID[i]
+           lls
+         }))
+
+  ind <- which.min((wkdf $ x - p[1])^2 + (wkdf $ y - p[2])^2)
+  rind <- which(wkrivs $ OBJECTID == wkdf $ OBJECTID[ind])
+  
+  gis $ rivs_OBJECTID[i] <- wkrivs $ OBJECTID[rind]
+
+  if (gis $ rivs_OBJECTID[i] %in% unlist(routeList)) {
+    init <- sapply(routeList, function(x) if (length(x)) any(x %in% gis $ rivs_OBJECTID[i]) else FALSE)
+    which <- which(init)[1]
+    ii <- which(routeList[[which]] == gis $ rivs_OBJECTID[i])
+    routeIDs <- routeList[[which]][ii : length(routeList[[which]])]
+
+    routeList[[i]] <- routeIDs
+    gis $ CATCH_ID[i] <- gis $ CATCH_ID[which]    
+    gis $ DESCRIPTIO[i] <- gis $ DESCRIPTIO[which]    
+    score[i] <- score[which]
+
+    # add info to rivs
+    rivs $ CATCH_ID[rivs $ OBJECTID %in% routeIDs] <- gis $ CATCH_ID[which]
+
+    rll <- gLineMerge(rivs[rivs $ OBJECTID %in% routeIDs,])     
+
+    if (visualise) {
+      plot(rll, lwd = 10, add = TRUE)
+      plot(rll, col = "orange", lwd = 5, add = TRUE)
+    }
+
+    next
+  }
+  
+  # find route to sea and choose catchment
+  routeIDs <- riverEnd(gis $ rivs_OBJECTID[i], old = unlist(routeList))
+
+  if (any(routeIDs %in% unlist(routeList))) {
+    init <- sapply(routeList, function(x) if (length(x)) any(x %in% routeIDs) else FALSE)
+    which <- which(init)[1]
+
+    ii <- which(routeList[[which]] %in% routeIDs)
+    routeIDs <- c(routeIDs, routeList[[which]][ii : length(routeList[[which]])][-1])
+
+    routeList[[i]] <- routeIDs
+    gis $ CATCH_ID[i] <- gis $ CATCH_ID[which]    
+    gis $ DESCRIPTIO[i] <- gis $ DESCRIPTIO[which]    
+    score[i] <- score[which]
+
+    # add info to rivs
+    rivs $ CATCH_ID[rivs $ OBJECTID %in% routeIDs] <- gis $ CATCH_ID[which]
+
+    rll <- gLineMerge(rivs[rivs $ OBJECTID %in% routeIDs,])     
+
+    if (visualise) {
+      plot(rll, lwd = 10, add = TRUE)
+      plot(rll, col = "orange", lwd = 5, add = TRUE)
+    }
+
+    next
+  }
+
+  rll <- gLineMerge(rivs[rivs $ OBJECTID %in% routeIDs,])     
+
+  if (visualise) {
+    plot(rll, lwd = 10, add = TRUE)
+    plot(rll, col = "orange", lwd = 5, add = TRUE)
+  }
+
+  routeList[[i]] <- routeIDs
+
+  # find which catchment polygon the majority of nodes lie in.
+  # this is nessisaru becouse some rivers have nodes in more than
+  # one catchment polygon
+
+  member1 <- 
+    sapply(wkcctm @ polygons, function(x)
+      mean(point.in.polygon(rll @ lines[[1]] @ Lines[[1]] @ coords[,1], 
+                            rll @ lines[[1]] @ Lines[[1]] @ coords[,2], 
+                            x @ Polygons[[1]] @ coords[,1],
+                            x @ Polygons[[1]] @ coords[,2])))
+
+  member2 <- 
+    sapply(ctm @ polygons, function(x)
+      mean(point.in.polygon(rll @ lines[[1]] @ Lines[[1]] @ coords[,1], 
+                            rll @ lines[[1]] @ Lines[[1]] @ coords[,2], 
+                            x @ Polygons[[1]] @ coords[,1],
+                            x @ Polygons[[1]] @ coords[,2])))
+
+  if (max(member1) > max(member2)) {
+    cpoly <- wkcctm[which.max(member1),]
+  } else {
+    cpoly <- ctm[which.max(member2),]
+  }
+
+  if (visualise) {
+    plot(cpoly, add = TRUE, lwd = 3)
+    points(wkgis, col = "red", pch = 16)
+    points(gis, col = "red")
+  }      
+
+  gis $ CATCH_ID[i] <- cpoly $ CATCH_ID    
+  gis $ DESCRIPTIO[i] <- as.character(cpoly $ DESCRIPTIO)    
+
+  # add info to rivs
+  rivs $ CATCH_ID[rivs $ OBJECTID %in% routeIDs] <- cpoly $ CATCH_ID
+
+  # store the score: the proportion of nodes in the allocated
+  # polygon
+  score[i] <- max(member1, member2)
+}
+
+# save reduced rivers dataset to rData folder
+redrivs <- rivs[!is.na(rivs $ CATCH_ID),]
+save(redrivs, file = fname("redrivs"))
+
+# save routes to sea dataset to rData folder
+save(routeList, file = fname("routeList"))
+
+# save rediced catchments dataset to rData folder
+redctm1 <- ctm[ctm $ CATCH_ID %in% gis $ CATCH_ID,]
+redctm1 @ data <- redctm1 @ data[c("CATCH_ID", "DESCRIPTIO")]
+redctm1 $ COASTAL <- FALSE
+
+redctm2 <- cctm[cctm $ CATCH_ID %in% gis $ CATCH_ID,]
+redctm2 @ data <- redctm2 @ data[c("CATCH_ID", "DESCRIPTIO")]
+redctm2 $ COASTAL <- TRUE
+
+redctm <- rbind(redctm1, redctm2)
+save(redctm, file = fname("redctm"))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+
+<h2><a name="site-bars">add barriers to site info</a></h2>
+
+```{r redbars, cache=TRUE, depenson=c("data_dir", "gis_stuff")}
+
+# now need to link bars with catchment
+load(fname("bars"))
+wk <- over(bars, redctm) 
+bars @ data <- cbind(bars @ data, wk)
+bars <- bars[!is.na(bars $ CATCH_ID),]
+
+# and match to river segment
+load(fname("rivs"))
+floc <- sapply(rivs @ lines, function(ll) ll @ Lines[[1]] @ coords[1,])
+tloc <- sapply(rivs @ lines, function(ll) {x <- ll @ Lines[[1]] @ coords; x[nrow(x),]})
+
+# create container for river stretch ID
+bars $ rivs_OBJECTID <- NA
+# find river segment  
+verbose <- FALSE
+for (i in 1:nrow(bars)) {
+  if (verbose) cat("       \r", sum(is.na(bars $ rivs_OBJECTID)), "to go!"); flush.console()
+  # choose a point
+  wkbars <- bars[i,]
+
+  # take a circle round the point
+  p <- c(wkbars @ coords)
+  dist <- 5000
+  rwhich <- which(colSums((floc - p)^2) < dist^2 | colSums((tloc - p)^2) < dist^2)
+  wkrivs <- rivs[rwhich,]
+  # find which river segment it is on
+  wkdf <- 
+  do.call(rbind, lapply(1:nrow(wkrivs),
+         function(i) {
+           lls <- wkrivs @ lines [[i]] @ Lines[[1]] @ coords
+           colnames(lls) <- c("x", "y")
+           lls <- as.data.frame(lls)
+           lls $ OBJECTID = wkrivs $ OBJECTID[i]
+           lls
+         }))
+
+  ind <- which.min((wkdf $ x - p[1])^2 + (wkdf $ y - p[2])^2)
+  rind <- which(wkrivs $ OBJECTID == wkdf $ OBJECTID[ind])
+  
+  #lines(wkrivs[rind,], col = "blue", lwd = 2)
+  bars $ rivs_OBJECTID[i] <- wkrivs $ OBJECTID[rind]
+}
+
+# remove barriers not on our river system
+which <- which(bars $ rivs_OBJECTID %in% redrivs $ OBJECTID)
+redbars <- bars[which,]
+
+save(redbars, file = fname("redbars"))
+```
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+<h2><a name="sea-route">Calculate route to sea for barriers</a></h2>
+
+
+```{r barslist, eval=TRUE, cache=TRUE, dependson=c("data_dir", "gis_stuff", "redbars")}
+verbose <- FALSE
+visualise <- FALSE
+barriersList <- 
+  lapply(1:nrow(gis), function(i) {
+  # choose a catchment
+    if (verbose) cat("       \r", i); flush.console()
+    wkgis <- gis[i,]  
+
+    rwhich <- sapply(routeList[[i]], function(x) which(redrivs $ OBJECTID == x))
+    wkrivs <- redrivs[rwhich,]
+    # need to find route to sea and list coords
+    rline <- do.call(rbind, lapply(wkrivs @ lines, function(x) x @ Lines[[1]] @ coords))
+    rline <- unique(rline)
+    nodetype <- rep(1, nrow(rline))
+
+    # insert barriers
+    bwhich <- which(bars $ rivs_OBJECTID %in% routeList[[i]])
+    if (length(bwhich) == 0) return(character(0)) 
+    wkbars <- bars[bwhich,]  
+
+    bcoords <- snapPointsToLines(wkbars, wkrivs) @ coords
+
+    for(j in 1:nrow(bcoords)) {
+      which <- min(order(colSums((t(rline) - c(bcoords[j,]))^2))[1:2])
+      rline <- rbind(rline[1:which,], bcoords[j,], rline[(which + 1):nrow(rline),])
+      nodetype <- c(nodetype[1:which], paste(wkbars $ ID[j]), nodetype[(which + 1):length(nodetype)])
+    }
+
+    # now add in sample point
+    gcoords <- snapPointsToLines(wkgis, wkrivs) @ coords
+
+    # insert points
+    which <- min(order(colSums((t(rline) - c(gcoords))^2))[1:2])
+    rline <- rbind(rline[1:which,], gcoords, rline[(which + 1):nrow(rline),])
+    nodetype <- c(nodetype[1:which], "gis", nodetype[(which + 1):length(nodetype)])
+
+    if (visualise) {
+      plot(rline, col = "blue", pch = 16, type = "b")
+      points(rline[nodetype == "gis",,drop=FALSE], col = "red", pch = 16)
+      points(rline[nodetype != "1" & nodetype != "gis",,drop=FALSE], col = 1, pch = 4, lwd = 3)
+      points(rline[nrow(rline),,drop=FALSE], col = "green", pch = 16)
+    }
+
+    gbars <- nodetype[(which(nodetype=="gis")+1):length(nodetype)]
+    gbars[gbars != "1"]
+  })
+
+
+  # save barriers dataset to rData folder
+  save(barriersList, file = fname("barriersList"))
+
+  # add barrier info to gis
+  impass <- bars $ BARRIER_PE %in% c("Impassable natural waterfall or other natural obstruction",
+                                      "Impassable obstructions Type unknown.",
+                                      "Impassable weir, dam or other manmade structure") 
+  gis $ barrier <- 
+    sapply(barriersList, function(x) {
+      if(length(x)) {
+        any(impass[bars $ ID %in% as.numeric(x)])
+      } else {
+        FALSE
+      } 
+    })
+
+  # finally save all changes to gis dataset to rData folder
+  save(gis, file = fname("gis_v2"))
+```
+
+
+<!-- 
+_______________________________________________________
+_______________________________________________________
+-->
+
+<h2><a name="trim-rivs">Trim rivers and remove psuedonodes</a></h2>
+
+```{r trim, cache=TRUE, dependson=c("data_dir", "barslist","sea-route")}
+# discard nonsampled river branches
+catchments <- sort(unique(gis $ CATCH_ID))
+newrivs <- list(length(catchments))
+
+verbose <- FALSE
+visualise <- FALSE
+for (catch in catchments) {
+  if (verbose) cat("\ncleaning catchment:", catch[1], "-", 
+      as.character(subset(gis, CATCH_ID %in% catch) $ DESCRIPTIO[1]), 
+      "\n"); flush.console()
+  
+  wkgis <- gis[gis $ CATCH_ID %in% catch,]
+  wkrivs <- redrivs[redrivs $ CATCH_ID %in% catch,]
+  if (visualise) {
+    plot(redctm[which(redctm $ CATCH_ID %in% catch),], col = "lightyellow")
+    title(main = paste0(catch[1], ": ", subset(gis, CATCH_ID %in% catch) $ DESCRIPTIO[1]))
+    plot(wkrivs, col = grey(0.5), add = TRUE)
+    points(wkgis, col = "red")
+  }
+  # go through each site, map route to sea recording nodes on route
+  # to save time a route can be terminated if the node has been seen before
+
+  # make river into a dataframe
+  wkdf <- 
+    do.call(rbind, lapply(1:nrow(wkrivs),
+           function(i) {
+             lls <- wkrivs @ lines [[i]] @ Lines[[1]] @ coords
+             colnames(lls) <- c("x", "y")
+             lls <- as.data.frame(lls)
+             lls $ OBJECTID = wkrivs $ OBJECTID[i]
+             lls
+           }))
+
+  ## now to remove psuedonodes
+  wk <- wkrivs#[wkrivs $ OBJECTID %in% IDs,]
+  wk $ keep <- TRUE
+
+  i <- 0
+  require(rgeos)
+  while(i < nrow(wk)) {
+    # pick a NODE
+    node <- wk $ FNODE_[i <- i + 1]
+
+    # if already marked for removal escape
+    if (!wk $ keep[i]) next
+
+    # what is the in degree?
+    idegree <- sum(wk $ TNODE_ == node)
+    odegree <- sum(wk $ FNODE_ == node)
+
+    # early escape
+    if (idegree != 1 || odegree != 1) next
+
+    if (verbose) cat("                             \r",
+            i, "psuedonode - REMOVE"); flush.console()
+
+    oldlines <- wk[wk $ TNODE_ == node | wk $ FNODE_ == node,]
+    fix <- which(wk $ TNODE_ == node)
+    
+    # signal for removal and loop on itself (this might not be nesisary)
+    wk $ keep[wk $ FNODE_ == node] <- FALSE
+    wk $ TNODE_[wk $ FNODE_ == node] <- node
+
+    wk $ LENGTH[fix] <- sum(oldlines $ LENGTH)
+    wk $ Shape_Leng[fix] <- sum(oldlines $ Shape_Leng)
+    wk $ TNODE_[fix] <- oldlines $ TNODE_[oldlines $ FNODE_ == node]
+    wk @ lines[[fix]] <- gLineMerge(oldlines) @ lines[[1]]
+
+    if (FALSE) {
+      plot(wk[fix,], col = "blue", lwd = 5)
+      plot(oldlines, col = c("red", "green"), add = TRUE)
+    }
+  }
+
+  # keep only good nodes
+  wk <- wk[wk $ keep,]
+  #plot(wk, lwd = 4, col = 2:10, add = TRUE)
+
+  # save river
+  newrivs[[which(catchments == catch)]] <- wk
+}
+
+## convert newrivs into a spatial lines DF
+dat <- do.call(rbind, lapply(newrivs, function(x) x @ data))
+Ls <- lapply(newrivs, function(x) x @ lines)
+Ls <- do.call(c, Ls)
+for (i in 1:nrow(dat)) Ls[[i]] @ ID <- rownames(dat)[i] 
+Ls <- SpatialLines(Ls)
+newrivs <- SpatialLinesDataFrame(Ls, dat)
+
+# save full dataset to rData folder
+save(newrivs, file = fname("newrivs"))
+```
+
+The reduced rivers and catchements look like
+
+```{r plot_newrivs, cache=TRUE, dependson=c("trim-rivs")}
+# plot
+plot(newrivs, main = "ctm", col = grey(0.7))
+```
